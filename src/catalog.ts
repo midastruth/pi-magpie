@@ -5,7 +5,7 @@ export const USER_AGENT = "pi-magpie/0.1.0";
 export type ChatModel = Extract<ProviderModelConfig, { reasoning: boolean }>;
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-function object(value: unknown): Record<string, unknown> | undefined {
+export function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown> : undefined;
 }

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { USER_AGENT } from "../src/catalog.ts";
+import { fetchModels, USER_AGENT } from "../src/catalog.ts";
+import { saveModelCache } from "../src/cache.ts";
 import { serve } from "./helpers.ts";
 
 const exec = promisify(execFile);
@@ -20,10 +21,12 @@ test("real Pi loads the provider and streams a Unicode response after a tool rou
   const requests: Record<string, any>[] = [];
   const headers: { authorization?: string; userAgent?: string }[] = [];
   let serverError: Error | undefined;
+  let modelRequests = 0;
   const baseUrl = await serve(t, async (req, res) => {
     try {
       headers.push({ authorization: req.headers.authorization, userAgent: req.headers["user-agent"] });
       if (req.url === "/v1/models") {
+        modelRequests++;
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify({ data: [{ id: "vendor/chat", display_name: "Test chat", reasoning: false }] }));
         return;
@@ -59,6 +62,14 @@ test("real Pi loads the provider and streams a Unicode response after a tool rou
   });
   const env = { ...process.env, PI_CODING_AGENT_DIR: join(dir, "agent"), MAGPIE_BASE_URL: baseUrl, MAGPIE_API_KEY: key, PI_OFFLINE: "1" };
   const common = [cli, "--no-extensions", "-e", join(root, "index.ts"), "--no-mcp", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes", "--no-approve"];
+  // Cold startup must not discover models, even when the gateway is reachable.
+  await exec(process.execPath, [...common, "--help"], { cwd: dir, env, timeout: 10000 });
+  assert.equal(modelRequests, 0);
+  // Seed the same snapshot as an explicit /magpie refresh, then exercise real Pi.
+  const config = { baseUrl, apiKey: key };
+  await saveModelCache(join(env.PI_CODING_AGENT_DIR, "magpie-models.json"), config, {
+    updatedAt: new Date().toISOString(), models: await fetchModels(config),
+  });
   const list = await exec(process.execPath, [...common, "--list-models", "magpie"], { cwd: dir, env, timeout: 10000 });
   assert.match(list.stdout, /vendor\/chat/);
   const operation = exec(process.execPath, [...common, "--provider", "magpie", "--model", "vendor/chat", "--thinking", "off", "--tools", "read", "--no-session", "-p", "Read sample.txt and confirm its contents."], { cwd: dir, env, timeout: 15000 });
@@ -67,6 +78,7 @@ test("real Pi loads the provider and streams a Unicode response after a tool rou
   if (serverError) throw serverError;
   assert.match(reply.stdout, /已读取：喜鹊测试 🐦/);
   assert.equal(requests.length, 2);
+  assert.equal(modelRequests, 1); // Only the explicit cache seed; never Pi startup.
   for (const h of headers) {
     assert.equal(h.authorization, `Bearer ${key}`);
     assert.equal(h.userAgent, USER_AGENT);
